@@ -152,7 +152,10 @@ verify() {
     log "  tip slot ${slot} (koios ${koios}, behind $(( koios - slot )))"
     if [[ ${slot} -gt ${first} && $(( koios - slot )) -le ${VERIFY_MAX_LAG} ]]; then
       log "  ${FG_GREEN}Amaru is following the chain${NC}"
-      [[ ${ROLE} = "bp" ]] && log "  KES period ${kesperiod:-?}, ${remaining_kes_periods:-?} periods remaining"
+      if [[ ${ROLE} = "bp" ]]; then
+        getNodeMetrics # amaru_tip_slot ran in a subshell, so its metric variables are gone
+        log "  KES period ${kesperiod:-?}, forging with ${POOL_DIR}/${POOL_OPCERT_FILENAME}"
+      fi
       return 0
     fi
   done
