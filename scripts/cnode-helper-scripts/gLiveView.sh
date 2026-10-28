@@ -539,11 +539,12 @@ getOpCert () {
   op_cert_chain="?"
   opcert_file="${POOL_DIR}/${POOL_OPCERT_FILENAME}"
   if [[ ! -f ${opcert_file} && -n ${CNODE_PID} ]]; then
-    if [[ $(ps -p ${CNODE_PID} -o cmd=) =~ --shelley-operational-certificate[[:space:]]([^[:space:]]+) ]]; then
-      opcert_file="${BASH_REMATCH[1]}"
+    if [[ $(ps -p ${CNODE_PID} -o cmd=) =~ (--shelley-operational-certificate|--operator-cert)[[:space:]]([^[:space:]]+) ]]; then
+      opcert_file="${BASH_REMATCH[2]}"
     fi
   fi
-  if [[ -f ${opcert_file} ]]; then
+  # kes-period-info needs the node socket, which Amaru does not provide
+  if [[ -f ${opcert_file} && ${NODE_IMPL} != "amaru" ]]; then
     op_cert="$(${CCLI} query kes-period-info ${NETWORK_IDENTIFIER} --op-cert-file "${opcert_file}" 2>/dev/null)"
     [[ ${op_cert} =~ qKesNodeStateOperationalCertificateNumber.:[[:space:]]([0-9]+) ]] && op_cert_chain="${BASH_REMATCH[1]}"
     [[ ${op_cert} =~ qKesOnDiskOperationalCertificateNumber.:[[:space:]]([0-9]+) ]] && op_cert_disk="${BASH_REMATCH[1]}"
@@ -720,6 +721,7 @@ checkPeers() {
 
 checkNodeVersion() {
   [[ ${running_node_version} = '?' ]] && return # ignore check if unable to fetch version from running node
+  [[ ${NODE_IMPL} = "amaru" ]] && return # Amaru exposes no build info metric to compare against
 
   version=$("${CNODEBIN}" version)
   node_version=$(grep "cardano-node" <<< "${version}" | cut -d ' ' -f2)
@@ -840,7 +842,7 @@ while true; do
   # Gather some data
   getNodeMetrics
   [[ ${RETRIES} -gt 0 && ${fail_count} -eq ${RETRIES} ]] && printf -v error_msg "${style_status_3}COULD NOT CONNECT TO A RUNNING INSTANCE, ${RETRIES} FAILED ATTEMPTS IN A ROW!${NC}" && logln "ERROR" "${error_msg}" && myExit 1 "${error_msg}"
-  CNODE_PID=$(pgrep -fn "$(basename ${CNODEBIN}).*.port ${CNODE_PORT}")
+  CNODE_PID=$(pgrep -fn "${CNODE_PROC_PATTERN}")
   if [[ -z ${CNODE_PID} ]]; then
     ((fail_count++))
     clrScreen && mvPos 2 2

@@ -7,7 +7,8 @@
 ######################################
 
 #USESYSVARS="N"                                         # Whether to use environment variable from shell session for CNODE_HOME
-#CNODEBIN="${HOME}/.local/bin/cardano-node"             # Override automatic detection of cardano-node executable
+#NODE_IMPL="cardano-node"                               # Node implementation run by cnode.sh: cardano-node | amaru (amaru has no node.socket, local queries use Koios)
+#CNODEBIN="${HOME}/.local/bin/cardano-node"             # Override automatic detection of node executable (cardano-node, or amaru when NODE_IMPL=amaru)
 #CCLI="${HOME}/.local/bin/cardano-cli"                  # Override automatic detection of cardano-cli executable
 #CNCLI="${HOME}/.local/bin/cncli"                       # Override automatic detection of executable (https://github.com/AndrewWestberg/cncli)
 #CNODE_HOME="/opt/cardano/cnode"                        # Override default CNODE_HOME path (defaults to /opt/cardano/cnode)
@@ -115,6 +116,8 @@
 #MITHRIL_DOWNLOAD="N"                                   # (Y|N) Download latest Mithril snapshot
 #MITHRIL_HOME="${CNODE_HOME}/mithril"                   # Override default Mithril path
 #MITHRIL_SIGNER_ENABLED="N"                             # (Y|N) Enable the gLiveView Mithril Signer Section
+
+#AMARU_HOME="${CNODE_HOME}/amaru"                       # Folder with Amaru chain/ledger databases and generated amaru.env (only used when NODE_IMPL=amaru)
 
 #STRICT_VERSION_CHECK="Y"                               # (Y|N) Require the minimum supported node/CLI major.minor.patch versions; ignore further components. If disabled, any version will be accepted (unsupported)
 
@@ -594,9 +597,13 @@ createDistanceToBottom() {
 
 # Description : Query cardano-node for current metrics
 getNodeMetrics() {
-  CNODE_PID=$(pgrep -fn "$(basename ${CNODEBIN}).*.--port ${CNODE_PORT}") # Define again - as node could be restarted since last attempt of sourcing env
+  CNODE_PID=$(pgrep -fn "${CNODE_PROC_PATTERN}") # Define again - as node could be restarted since last attempt of sourcing env
   [[ -n ${CNODE_PID} ]] && uptimes=$(( $(date -u +%s) - $(date -d "$(ps -p ${CNODE_PID} -o lstart=)" +%s) )) || uptimes=0
   node_metrics=$(curl -s -m ${PROM_TIMEOUT} "http://${PROM_HOST}:${PROM_PORT}/metrics" | grep -v '^# ' 2>/dev/null)
+  if [[ ${NODE_IMPL} = "amaru" ]]; then
+    # OTLP-converted metrics: drop labels and the _total suffix, print integers in full instead of 4.80229e+06
+    node_metrics=$(awk '{ name=$1; sub(/\{.*/, "", name); sub(/_total$/, "", name); v=$NF; if (v ~ /e\+/) v=sprintf("%.0f", v); print name, v }' <<< "${node_metrics}")
+  fi
   [[ ${node_metrics} =~ cardano_node_metrics_blockNum_int[[:space:]]([^[:space:]]*) ]] && blocknum=${BASH_REMATCH[1]} || blocknum=0
   [[ ${node_metrics} =~ cardano_node_metrics_epoch_int[[:space:]]([^[:space:]]*) ]] && epochnum=${BASH_REMATCH[1]} || epochnum=0
   [[ ${node_metrics} =~ cardano_node_metrics_slotInEpoch_int[[:space:]]([^[:space:]]*) ]] && slot_in_epoch=${BASH_REMATCH[1]} || slot_in_epoch=0
@@ -636,6 +643,10 @@ getNodeMetrics() {
   [[ ${node_metrics} =~ cardano_node_metrics_cardano_build_info[[:space:]]*.*,revision=\"([0-9a-f]*)\" ]] && running_node_rev=${BASH_REMATCH[1]:0:8} || running_node_rev="?"
   [[ ${node_metrics} =~ cardano_node_metrics_inboundGovernor_warm(_int|)[[:space:]]([^[:space:]]*) ]] && inbound_governor_warm=${BASH_REMATCH[2]} || inbound_governor_warm=0
   [[ ${node_metrics} =~ cardano_node_metrics_inboundGovernor_hot(_int|)[[:space:]]([^[:space:]]*) ]] && inbound_governor_hot=${BASH_REMATCH[2]} || inbound_governor_hot=0
+  if [[ ${NODE_IMPL} = "amaru" ]]; then
+    running_node_version="Amaru ${node_version}"
+    running_node_rev="${node_rev:-?}"
+  fi
 }
 
 # Description : Get shelley transition epoch for non-predefined networks
@@ -983,6 +994,8 @@ set_default_vars() {
   [[ -z ${MITHRIL_DOWNLOAD} ]] && MITHRIL_DOWNLOAD="N"
   [[ -z ${MITHRIL_HOME} ]] && MITHRIL_HOME="${CNODE_HOME}/mithril"
   [[ -z ${MITHRIL_SIGNER_ENABLED} ]] && MITHRIL_SIGNER_ENABLED="N"
+  [[ -z ${AMARU_HOME} ]] && AMARU_HOME="${CNODE_HOME}/amaru"
+  AMARU_MIN_VERSION="10.11.20261022"
   [[ -z ${STRICT_VERSION_CHECK} ]] && STRICT_VERSION_CHECK="Y"
   if [[ -z "${KOIOS_API_HEADERS[*]}" ]] ; then
     if [[ -n "${KOIOS_API_TOKEN}" ]] ; then
@@ -1052,16 +1065,23 @@ if [[ -z "${CCLI}" ]]; then
   fi
 fi
 
-[[ -z "${CNODEBIN}" ]] && CNODEBIN=$(command -v cardano-node)
+[[ -z ${NODE_IMPL} ]] && NODE_IMPL="cardano-node"
+NODE_IMPL=$(tr '[:upper:]' '[:lower:]' <<< "${NODE_IMPL}")
+if [[ ${NODE_IMPL} != "cardano-node" && ${NODE_IMPL} != "amaru" ]]; then
+  echo "Unsupported NODE_IMPL '${NODE_IMPL}' set in env file, valid options are: cardano-node | amaru"
+  return 1
+fi
+
+[[ -z "${CNODEBIN}" ]] && CNODEBIN=$(command -v ${NODE_IMPL})
 if [[ -z "${CNODEBIN}" ]]; then
-  if [[ -f "$(dirname ${CCLI})"/cardano-node ]]; then
+  if [[ -f "$(dirname ${CCLI})"/${NODE_IMPL} ]]; then
     CCLIPARENT="$(dirname ${CCLI})" && export PATH="${CCLIPARENT}":$PATH
-    CNODEBIN="$(dirname ${CCLI})"/cardano-node
-  elif [[ -f "${HOME}/.local/bin/cardano-node" ]]; then
+    CNODEBIN="$(dirname ${CCLI})"/${NODE_IMPL}
+  elif [[ -f "${HOME}/.local/bin/${NODE_IMPL}" ]]; then
     export PATH="${HOME}/.local/bin":$PATH
-    CNODEBIN=$(command -v cardano-node)
+    CNODEBIN=$(command -v ${NODE_IMPL})
   elif [[ ${OFFLINE_MODE} = "N" ]]; then
-    echo "You do not have a cardano-node binary available in \$PATH."
+    echo "You do not have a ${NODE_IMPL} binary available in \$PATH."
     return 1
   fi
 fi
@@ -1072,19 +1092,36 @@ fi
 
 [[ -f /usr/local/lib/libsodium.so ]] && export LD_LIBRARY_PATH=/usr/local/lib:"${LD_LIBRARY_PATH}" && PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:"${PKG_CONFIG_PATH}"
 
-node_version="$(${CNODEBIN} version | head -1 | cut -d' ' -f2)"
 cli_version="$(${CCLI} version | head -1 | cut -d' ' -f2)"
 
-if ! versionCheckNode "11.1.3" "${node_version}" || ! versionCheckNode "11.4.0.0" "${cli_version}"; then
-  echo -e "\nGuild scripts require cardano-node >= 11.1.3 ('${node_version}' found) / cardano-cli >= 11.4.0 ('${cli_version}' found), comparing major.minor.patch.\nPlease update cardano-node and cardano-cli binaries (ensure to read release notes and update various configs using guild-deploy (use appropriate options to download/install/overwrite parts you need) or use tagged branches for older node version (eg: ./<script>.sh -b node-10.1.4 to switch scripts to an older branch).\n"
-  echo -e "  Refer to https://cardano-community.github.io/guild-operators/upgrade/ for upgrade assistance!\n\n"
-  return 1
+if [[ ${NODE_IMPL} = "amaru" ]]; then
+  # 'amaru --version' prints e.g. 'Amaru 10.11.20261022 (ddd3fdf)'
+  node_version="$(${CNODEBIN} --version 2>/dev/null | head -1 | cut -d' ' -f2)"
+  [[ $(${CNODEBIN} --version 2>/dev/null | head -1) =~ \(([0-9a-f]+) ]] && node_rev=${BASH_REMATCH[1]:0:8}
+  if { [[ ${STRICT_VERSION_CHECK} != N ]] && ! versionCheck "${AMARU_MIN_VERSION}" "${node_version}"; } || ! versionCheckNode "11.4.0.0" "${cli_version}"; then
+    echo -e "\nGuild scripts require amaru >= ${AMARU_MIN_VERSION} ('${node_version}' found) / cardano-cli >= 11.4.0 ('${cli_version}' found).\nPlease update the binaries using guild-deploy.sh (amaru with '-s a').\n"
+    return 1
+  fi
+else
+  node_version="$(${CNODEBIN} version | head -1 | cut -d' ' -f2)"
+  if ! versionCheckNode "11.1.3" "${node_version}" || ! versionCheckNode "11.4.0.0" "${cli_version}"; then
+    echo -e "\nGuild scripts require cardano-node >= 11.1.3 ('${node_version}' found) / cardano-cli >= 11.4.0 ('${cli_version}' found), comparing major.minor.patch.\nPlease update cardano-node and cardano-cli binaries (ensure to read release notes and update various configs using guild-deploy (use appropriate options to download/install/overwrite parts you need) or use tagged branches for older node version (eg: ./<script>.sh -b node-10.1.4 to switch scripts to an older branch).\n"
+    echo -e "  Refer to https://cardano-community.github.io/guild-operators/upgrade/ for upgrade assistance!\n\n"
+    return 1
+  fi
+fi
+
+# Pattern matching the running node process (used by pgrep/ps across scripts)
+if [[ ${NODE_IMPL} = "amaru" ]]; then
+  CNODE_PROC_PATTERN="$(basename ${CNODEBIN}) node run.*--peers-listen-on [^ ]*:${CNODE_PORT}"
+else
+  CNODE_PROC_PATTERN="$(basename ${CNODEBIN}).*.port ${CNODE_PORT}"
 fi
 
 if [[ -z "${SOCKET}" ]]; then
-  if [[ "$(ps -ef | grep "$(basename ${CNODEBIN}).*.port ${CNODE_PORT}" | grep -v grep)" =~ --socket-path[[:space:]]([^[:space:]]+) ]]; then
+  if [[ "$(ps -ef | grep "${CNODE_PROC_PATTERN}" | grep -v grep)" =~ --socket-path[[:space:]]([^[:space:]]+) ]]; then
     export CARDANO_NODE_SOCKET_PATH="${BASH_REMATCH[1]}"
-  elif [[ ${OFFLINE_MODE} = "Y" ]]; then
+  elif [[ ${OFFLINE_MODE} = "Y" || ${NODE_IMPL} = "amaru" ]]; then
     export CARDANO_NODE_SOCKET_PATH="${CNODE_HOME}/sockets/node.socket"
   else
     echo "Node socket not set in env file and automatic detection failed! [source: $(basename $0 2>/dev/null)]"
@@ -1096,7 +1133,7 @@ fi
 export SOCKET="${CARDANO_NODE_SOCKET_PATH}" # For compatibility with those who havn't yet upgraded cnode.sh
 
 if [[ -z "${CONFIG}" ]]; then
-  if [[ "$(ps -ef | grep "$(basename ${CNODEBIN}).*.port ${CNODE_PORT}" | grep -v grep)" =~ --config[[:space:]]([^[:space:]]+) ]]; then
+  if [[ "$(ps -ef | grep "${CNODE_PROC_PATTERN}" | grep -v grep)" =~ --config[[:space:]]([^[:space:]]+) ]]; then
     CONFIG=${BASH_REMATCH[1]}
   elif [[ -f "${CNODE_HOME}/files/config.json" ]]; then
     CONFIG="${CNODE_HOME}/files/config.json"
@@ -1140,7 +1177,10 @@ GENESIS_JSON="${CONFIG_CONTENTS[2]}"
 GENESIS_HASH="$(${CCLI} hash genesis-file --genesis "${GENESIS_JSON}")"
 PROTOCOL="${CONFIG_CONTENTS[3]}"
 
-if [[ -z "$PROM_HOST" || -z "$PROM_PORT" ]]; then
+if [[ ${NODE_IMPL} = "amaru" ]]; then
+  [[ -z "$PROM_HOST" ]] && PROM_HOST=127.0.0.1
+  [[ -z "$PROM_PORT" ]] && PROM_PORT=12798
+elif [[ -z "$PROM_HOST" || -z "$PROM_PORT" ]]; then
   PROM_PORT=$(jq -er '
     (.TraceOptions."".backends // [])
     | .[]
@@ -1172,7 +1212,7 @@ BLOCKLOG_DB="${BLOCKLOG_DIR}/blocklog.db"
 [[ -z "${IP_VERSION}" ]] && IP_VERSION=4
 IP_VERSION=$(tr '[:upper:]' '[:lower:]' <<< "${IP_VERSION}")
 
-CNODE_PID=$(pgrep -fn "$(basename ${CNODEBIN}).*.--port ${CNODE_PORT}")
+CNODE_PID=$(pgrep -fn "${CNODE_PROC_PATTERN}")
 
 read_genesis
 
@@ -1203,7 +1243,12 @@ esac
 
 # Return code 2 is used for scripts that want to source env but not fail due to a starting node
 
-if [[ ${OFFLINE_MODE} = "N" && ! -S ${CARDANO_NODE_SOCKET_PATH} ]]; then
+if [[ ${NODE_IMPL} = "amaru" && ${OFFLINE_MODE} = "N" && -z ${KOIOS_API} ]]; then
+  echo -e "${FG_RED}NODE_IMPL=amaru has no node.socket for local queries, please enable Koios (ENABLE_KOIOS=Y / KOIOS_API) in env file.${NC}"
+  return 1
+fi
+
+if [[ ${NODE_IMPL} != "amaru" && ${OFFLINE_MODE} = "N" && ! -S ${CARDANO_NODE_SOCKET_PATH} ]]; then
   echo -e "${FG_RED}Looks like cardano-node is running with socket-path as ${FG_LBLUE}${CARDANO_NODE_SOCKET_PATH}${FG_RED}, but the actual socket file does not exist."
   echo -e "This could occur if the node hasnt completed startup or if a second instance of node startup was attempted!"
   echo -e "If this does not resolve automatically in a few minutes, you might want to restart your node and try again.${NC}"
