@@ -159,7 +159,7 @@ err_exit() {
 usage() {
   cat <<-EOF >&2
 
-		Usage: $(basename "$0") [-n <mainnet|guild|preprod|preview>] [-p path] [-t <name>] [-b <branch>] [-u] [-s [p][b][l][m][d][c][o][w][x][f][s]]
+		Usage: $(basename "$0") [-n <mainnet|guild|preprod|preview>] [-p path] [-t <name>] [-b <branch>] [-i <cardano-node|amaru>] [-u] [-s [p][b][l][m][d][a][c][o][w][x][f][s]]
 		Set up dependencies for building/using common tools across cardano ecosystem.
 		The script will always update dynamic content from existing scripts retaining existing user variables
 
@@ -167,6 +167,8 @@ usage() {
 		-p    Parent folder path underneath which the top-level folder will be created (Default: /opt/cardano)
 		-t    Alternate name for top level folder - only alpha-numeric chars allowed (Default: cnode)
 		-b    Use alternate branch of scripts to download - only recommended for testing/development (Default: master)
+		-i    Node implementation to run as cnode: cardano-node or amaru (Default: cardano-node, or keep the current choice in env)
+		      'amaru' also downloads the Amaru binaries (-s a); see migrate-amaru.sh to move an existing cardano-node to Amaru
 		-u    Skip update check for script itself
 		-s    Selective Install, only deploy specific components as below:
 		  p   Install common pre-requisite OS-level Dependencies for most tools on this repo (Default: skip)
@@ -174,6 +176,7 @@ usage() {
 		  l   Build and Install libsodium fork from IO repositories (Default: skip)
 		  m   Download latest (released) binaries for mithril-signer, mithril-client (Default: skip)
 		  d   Download latest (released) binaries for bech32, cardano-address, cardano-node, cardano-cli, cardano-db-sync and cardano-submit-api (Default: skip)
+		  a   Download supported (released) binaries for Amaru and the OpenTelemetry collector serving its metrics (Default: skip)
 		  c   Download latest (released) binaries for CNCLI (Default: skip)
 		  o   Download latest (released) binaries for Ogmios (Default: skip)
 		  w   Download latest (released) binaries for Cardano Hardware CLI (Default: skip)
@@ -195,6 +198,7 @@ set_defaults() {
   [[ -z ${SCRIPTS_FORCE_OVERWRITE} ]] && SCRIPTS_FORCE_OVERWRITE='N'
   [[ -z ${LIBSODIUM_FORK} ]] && LIBSODIUM_FORK='N'
   [[ -z ${INSTALL_MITHRIL} ]] && INSTALL_MITHRIL='N'
+  [[ -z ${INSTALL_AMARU} ]] && INSTALL_AMARU='N'
   [[ -z ${INSTALL_CNCLI} ]] && INSTALL_CNCLI='N'
   [[ -z ${INSTALL_CWHCLI} ]] && INSTALL_CWHCLI='N'
   [[ -z ${INSTALL_OGMIOS} ]] && INSTALL_OGMIOS='N'
@@ -212,6 +216,8 @@ set_defaults() {
   [[ -z "${CARDANO_NODE_VERSION}" ]] && CARDANO_NODE_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/cardano-node-latest.txt" || echo "11.1.3")"
   [[ -z "${CARDANO_CLI_VERSION}" ]] && CARDANO_CLI_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/cardano-cli-latest.txt" || echo "11.4.0.0")"
   [[ -z "${DBSYNC_VERSION}" ]] && DBSYNC_VERSION="13.7.2.1"
+  [[ -z "${AMARU_VERSION}" ]] && AMARU_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/amaru-latest.txt" || echo "10.11.20261022")"
+  [[ -z "${OTELCOL_VERSION}" ]] && OTELCOL_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/otelcol-latest.txt" || echo "0.164.0")"
   [[ -z "${CADDR_VERSION}" ]] && CADDR_VERSION="4.0.7"
   CNODE_HOME="${CNODE_PATH}/${CNODE_NAME}"
   CNODE_VNAME=$(echo "$CNODE_NAME" | awk '{print toupper($0)}')
@@ -814,6 +820,38 @@ download_mithril() {
     log_ok "Deployed mithril-client" "${mithril_release}"
 }
 
+# Download Amaru and the OpenTelemetry collector that re-exposes its OTLP metrics on the Prometheus port used by gLiveView
+download_amaru() {
+  local amaru_arch otel_arch amaru_tgz amaru_url otel_tgz otel_url amaru_bin
+  [[ -z ${ARCH##*aarch64*} ]] && amaru_arch="aarch64" || amaru_arch="x86_64"
+  [[ -z ${ARCH##*aarch64*} ]] && otel_arch="arm64" || otel_arch="amd64"
+  pushd "${HOME}"/tmp >/dev/null || err_exit "Could not enter temporary directory: ${HOME}/tmp"
+  rm -rf amaru-dl && mkdir amaru-dl
+
+  amaru_tgz="amaru-${AMARU_VERSION}-linux-${amaru_arch}.tar.gz"
+  amaru_url="https://github.com/pragma-org/amaru/releases/download/v${AMARU_VERSION}"
+  log_progress "Downloading Amaru" "${AMARU_VERSION}"
+  curl -m 200 -sfL "${amaru_url}/${amaru_tgz}" -o "amaru-dl/${amaru_tgz}" || err_exit "Could not download Amaru release ${AMARU_VERSION} from GitHub."
+  curl -m ${CURL_TIMEOUT} -sfL "${amaru_url}/amaru-${AMARU_VERSION}-checksums.manifest" -o amaru-dl/checksums || err_exit "Could not download Amaru ${AMARU_VERSION} checksums from GitHub."
+  (cd amaru-dl && grep " ${amaru_tgz}$" checksums | sha256sum -c --quiet -) || err_exit "Checksum verification failed for ${amaru_tgz}."
+  tar xzf "amaru-dl/${amaru_tgz}" -C amaru-dl
+  amaru_bin=$(find amaru-dl -type f -path '*/bin/amaru' | head -1)
+  [[ -n ${amaru_bin} ]] || err_exit "Amaru archive downloaded, but binary 'amaru' was not found after extraction."
+  install -m 755 "${amaru_bin}" "${HOME}"/.local/bin/amaru
+  log_ok "Deployed amaru" "$("${HOME}"/.local/bin/amaru --version | head -1 | cut -d' ' -f2)"
+
+  otel_tgz="otelcol_${OTELCOL_VERSION}_linux_${otel_arch}.tar.gz"
+  otel_url="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}"
+  log_progress "Downloading OpenTelemetry collector" "${OTELCOL_VERSION}"
+  curl -m 200 -sfL "${otel_url}/${otel_tgz}" -o "amaru-dl/${otel_tgz}" || err_exit "Could not download otelcol ${OTELCOL_VERSION} from GitHub."
+  echo "$(curl -m ${CURL_TIMEOUT} -sfL "${otel_url}/${otel_tgz}.sha256" | awk '{print $1}')  amaru-dl/${otel_tgz}" | sha256sum -c --quiet - || err_exit "Checksum verification failed for ${otel_tgz}."
+  tar xzf "amaru-dl/${otel_tgz}" -C amaru-dl otelcol || err_exit "otelcol archive downloaded, but binary 'otelcol' was not found after extraction."
+  install -m 755 amaru-dl/otelcol "${HOME}"/.local/bin/otelcol
+  log_ok "Deployed otelcol" "${OTELCOL_VERSION}"
+  rm -rf amaru-dl
+  popd >/dev/null || return
+}
+
 # Create folder structure and set up permissions/ownerships
 setup_folder() {
   log_progress "Creating folder structure" "${CNODE_HOME}"
@@ -909,6 +947,23 @@ populate_cnode() {
   updateWithCustomConfig "mithril-relay.sh"
   updateWithCustomConfig "mithril-signer.sh"
   updateWithCustomConfig "mithril.library"
+  updateWithCustomConfig "amaru.library"
+  updateWithCustomConfig "migrate-amaru.sh"
+
+  if [[ -n ${NODE_IMPL} ]]; then
+    # Only an explicit -i changes the implementation, so a plain refresh never undoes a migration
+    local env_file="${CNODE_HOME}"/scripts/env user_end at
+    user_end=$(grep -n '^# Do NOT modify' "${env_file}" | head -1 | cut -d: -f1)
+    if head -n "${user_end}" "${env_file}" | grep -qE '^#?NODE_IMPL="[a-z-]*"'; then
+      sed -i "1,${user_end}s|^#\?NODE_IMPL=\"[a-z-]*\"|NODE_IMPL=\"${NODE_IMPL}\"|" "${env_file}"
+    else
+      # env kept from before NODE_IMPL existed: add the user variable next to CNODEBIN
+      at=$(head -n "${user_end}" "${env_file}" | grep -n '^#\?CNODEBIN=' | head -1 | cut -d: -f1)
+      [[ -z ${at} ]] && at=$(( user_end - 1 ))
+      sed -i "${at}i NODE_IMPL=\"${NODE_IMPL}\"                               # Node implementation run by cnode.sh: cardano-node | amaru" "${env_file}"
+    fi
+    log_info "Node implementation set to ${NODE_IMPL} in ${env_file}."
+  fi
 
   find "${CNODE_HOME}/scripts" -name '*.sh' -exec chmod 755 {} \; 2>/dev/null
   chmod 750 "${CNODE_HOME}"/priv 2>/dev/null
@@ -926,6 +981,7 @@ parse_args() {
     [[ "${S_ARGS}" =~ "f" ]] && FORCE_OVERWRITE="Y" && POPULATE_CNODE="Y"
     [[ "${S_ARGS}" =~ "s" ]] && SCRIPTS_FORCE_OVERWRITE="Y" && POPULATE_CNODE="Y"
     [[ "${S_ARGS}" =~ "d" ]] && INSTALL_CNODEBINS="Y"
+    [[ "${S_ARGS}" =~ "a" ]] && INSTALL_AMARU="Y"
     [[ "${S_ARGS}" =~ "c" ]] && INSTALL_CNCLI="Y"
     [[ "${S_ARGS}" =~ "o" ]] && INSTALL_OGMIOS="Y"
     [[ "${S_ARGS}" =~ "w" ]] && INSTALL_OS_DEPS="Y" && INSTALL_CWHCLI="Y"
@@ -934,6 +990,7 @@ parse_args() {
   else
     NO_SELECTIVE_FLAGS="Y"
   fi
+  [[ ${NODE_IMPL} = "amaru" ]] && INSTALL_AMARU="Y"
   common_init
   if [[ ! -d "${CNODE_HOME}"/files ]]; then
     # Guess this is a fresh machine and set minimal params
@@ -954,6 +1011,7 @@ main_flow() {
   [[ "${INSTALL_MITHRIL}" == "Y" ]] && run_step "Mithril binaries" "-s m" download_mithril
   [[ "${POPULATE_CNODE}" == "Y" ]] && run_step "Scripts and configuration" "default/-s f/s" populate_cnode
   [[ "${INSTALL_CNODEBINS}" == "Y" ]] && run_step "Cardano node binaries" "-s d" download_cnodebins
+  [[ "${INSTALL_AMARU}" == "Y" ]] && run_step "Amaru binaries" "-s a/-i amaru" download_amaru
   [[ "${INSTALL_CNCLI}" == "Y" ]] && run_step "CNCLI" "-s c" download_cncli
   [[ "${INSTALL_OGMIOS}" == "Y" ]] && run_step "Ogmios" "-s o" download_ogmios
   [[ "${INSTALL_CWHCLI}" == "Y" ]] && run_step "Cardano hardware CLI" "-s w" download_cardanohwcli
@@ -961,12 +1019,14 @@ main_flow() {
   [[ "${INSTALL_BLOCKPERF}" == "Y" ]] && run_step "openBlockPerf" "-s r" download_blockperf
 }
 
-while getopts :n:p:t:s:b:u opt; do
+while getopts :n:p:t:s:b:i:u opt; do
   case ${opt} in
     n ) NETWORK=${OPTARG} ;;
     p ) CNODE_PATH=${OPTARG} ;;
     t ) CNODE_NAME=${OPTARG//[^[:alnum:]]/_} ;;
     b ) BRANCH=${OPTARG} ;;
+    i ) NODE_IMPL=${OPTARG,,}
+        [[ ${NODE_IMPL} = "cardano-node" || ${NODE_IMPL} = "amaru" ]] || { echo "Invalid -i '${OPTARG}', valid options are: cardano-node | amaru"; usage; } ;;
     u ) UPDATE_CHECK='N' ;;
     s ) S_ARGS="${OPTARG}" ;;
     \? ) usage ;;
