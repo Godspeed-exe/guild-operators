@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2086,SC2154
+#shellcheck source=/dev/null
+
+######################################
+# Do NOT modify code below           #
+######################################
+
+# Functions shared by cnode.sh and migrate-amaru.sh to run Amaru (https://github.com/pragma-org/amaru)
+# in place of cardano-node. Expects env to be sourced first.
+
+#############################
+# Amaru General functions   #
+#############################
+
+# Description : Amaru --network value for the network selected by the genesis magic in env
+amaru_network() {
+  case ${NWMAGIC} in
+    764824073) echo "mainnet" ;;
+    1) echo "preprod" ;;
+    2) echo "preview" ;;
+    *) echo "testnet_${NWMAGIC}" ;;
+  esac
+}
+
+amaru_db_chain() { echo "${AMARU_HOME}/chain.$(amaru_network).db"; }
+amaru_db_ledger() { echo "${AMARU_HOME}/ledger.$(amaru_network).db"; }
+
+# Description : The pool keys cnode.sh would start cardano-node with as a block producer are present
+amaru_is_block_producer() {
+  [[ -f "${POOL_DIR}/${POOL_OPCERT_FILENAME}" && -f "${POOL_DIR}/${POOL_VRF_SK_FILENAME}" && -f "${POOL_DIR}/${POOL_HOTKEY_SK_FILENAME}" ]]
+}
+
+# Description : Amaru refuses to forge on mainnet, so a mainnet block producer must stay on cardano-node
+amaru_forging_supported() {
+  [[ $(amaru_network) != "mainnet" ]]
+}
+
+# Description : Listen address for the node-to-node port, honouring IP_VERSION and CNODE_LISTEN_IP4/6
+amaru_listen_address() {
+  if [[ ${IP_VERSION} = "6" || ${IP_VERSION} = "mix" ]]; then
+    echo "[${CNODE_LISTEN_IP6:-::}]:${CNODE_PORT}"
+  else
+    echo "${CNODE_LISTEN_IP4:-0.0.0.0}:${CNODE_PORT}"
+  fi
+}
+
+# Description : Translate a cardano-node topology.json into Amaru peer settings.
+#             : Sets AMARU_TOPO_PEERS (comma separated host:port), AMARU_TOPO_MIX, AMARU_TOPO_MAX_UPSTREAM,
+#             : AMARU_TOPO_MAX_DOWNSTREAM and AMARU_TOPO_WARNINGS (array of settings Amaru has no equivalent for)
+#             : $1 = topology file (default: ${TOPOLOGY})
+#             : $2 = role, relay | bp (default: detected from pool keys)
+amaru_translate_topology() {
+  local topology="${1:-${TOPOLOGY}}" role="${2}" local_peers public_peers bootstrap_peers use_ledger
+  [[ -z ${role} ]] && { amaru_is_block_producer && role="bp" || role="relay"; }
+  [[ -f ${topology} ]] || { echo "ERROR: topology file ${topology} not found" >&2; return 1; }
+  jq -e . "${topology}" &>/dev/null || { echo "ERROR: topology file ${topology} is not valid JSON" >&2; return 1; }
+
+  # IPv6 literals are bracketed so that the port separator stays unambiguous
+  local fmt='(if (.address | test(":")) then "[\(.address)]" else .address end) + ":" + (.port | tostring)'
+  local_peers=$(jq -r "[.localRoots[]?.accessPoints[]? | ${fmt}] | unique | join(\",\")" "${topology}")
+  public_peers=$(jq -r "[.publicRoots[]?.accessPoints[]? | ${fmt}] | unique | join(\",\")" "${topology}")
+  bootstrap_peers=$(jq -r "[.bootstrapPeers[]? | ${fmt}] | unique | join(\",\")" "${topology}")
+  use_ledger=$(jq -r '.useLedgerAfterSlot // -1' "${topology}")
+
+  local n_local=0 n_hot
+  [[ -n ${local_peers} ]] && n_local=$(tr ',' '\n' <<< "${local_peers}" | wc -l)
+  # cardano-node keeps hotValency peers of each localRoots group active (all of them when unset)
+  n_hot=$(jq '[.localRoots[]? | (.hotValency // (.accessPoints | length))] | add // 0' "${topology}")
+
+  AMARU_TOPO_WARNINGS=()
+  jq -e '[.localRoots[]? | select(.trustable == true)] | length > 0' "${topology}" &>/dev/null \
+    && AMARU_TOPO_WARNINGS+=("localRoots 'trustable' has no Amaru equivalent; all configured peers are treated alike")
+  jq -e '[.localRoots[]?, .publicRoots[]? | select(.advertise == true)] | length > 0' "${topology}" &>/dev/null \
+    && AMARU_TOPO_WARNINGS+=("'advertise' has no Amaru equivalent; peer sharing is governed by the 'shared' source of the peers mix")
+  jq -e '[.localRoots[]? | select(.warmValency != null)] | length > 0' "${topology}" &>/dev/null \
+    && AMARU_TOPO_WARNINGS+=("'warmValency' has no Amaru equivalent and is ignored")
+
+  if [[ ${role} = "bp" ]]; then
+    # A block producer only ever talks to its own relays: static peers only, no discovery, no strangers inbound
+    AMARU_TOPO_PEERS="${local_peers}"
+    [[ ${n_local} -eq 0 ]] && { echo "ERROR: block producer topology ${topology} has no localRoots (own relays) to connect to" >&2; return 1; }
+    AMARU_TOPO_MIX="static!${n_local}"
+    AMARU_TOPO_MAX_UPSTREAM=${n_local}
+    AMARU_TOPO_MAX_DOWNSTREAM=${n_local}
+    [[ -n ${public_peers}${bootstrap_peers} ]] && AMARU_TOPO_WARNINGS+=("publicRoots/bootstrapPeers are ignored on a block producer, only localRoots are used")
+  else
+    AMARU_TOPO_PEERS=$(sed -E 's/^,+|,+$//g; s/,+/,/g' <<< "${local_peers},${public_peers},${bootstrap_peers}")
+    local floor=$(( n_hot > 2 ? n_hot : 2 ))
+    AMARU_TOPO_MIX="static!${floor}@15m, inbound~6, shared~6, snapshot~3@1h"
+    [[ ${use_ledger} -ge 0 ]] && AMARU_TOPO_MIX+=", ledger~3@24h"
+    AMARU_TOPO_MAX_UPSTREAM=$(( floor + 3 ))
+    AMARU_TOPO_MAX_DOWNSTREAM=""
+  fi
+  return 0
+}
+
+# Description : Assemble the 'amaru node run' arguments equivalent to how cnode.sh runs cardano-node.
+#             : Sets AMARU_RUN_ARGS (array). Returns 1 with a message if the setup cannot run.
+amaru_run_args() {
+  local network role
+  network=$(amaru_network)
+  amaru_is_block_producer && role="bp" || role="relay"
+  if [[ ${role} = "bp" ]] && ! amaru_forging_supported; then
+    echo "ERROR: Amaru does not support block production on ${network} yet; keep this block producer on cardano-node (NODE_IMPL=cardano-node)." >&2
+    return 1
+  fi
+  amaru_translate_topology "${TOPOLOGY}" "${role}" || return 1
+
+  AMARU_RUN_ARGS=(
+    node run
+    --network "${network}"
+    --tui-off
+    --db-chain "$(amaru_db_chain)"
+    --db-ledger "$(amaru_db_ledger)"
+    --peers-listen-on "$(amaru_listen_address)"
+    --pid-export "${AMARU_HOME}/amaru.pid"
+    --with-open-telemetry=metrics
+  )
+  [[ -n ${AMARU_TOPO_PEERS} ]] && AMARU_RUN_ARGS+=(--peer "${AMARU_TOPO_PEERS}")
+  AMARU_RUN_ARGS+=(--peers-mix "${AMARU_TOPO_MIX}" --peers-max-upstream "${AMARU_TOPO_MAX_UPSTREAM}")
+  [[ -n ${AMARU_TOPO_MAX_DOWNSTREAM} ]] && AMARU_RUN_ARGS+=(--peers-max-downstream "${AMARU_TOPO_MAX_DOWNSTREAM}")
+  [[ -n ${AMARU_SUBMIT_API_LISTEN} ]] && AMARU_RUN_ARGS+=(--submit-api-listen-on "${AMARU_SUBMIT_API_LISTEN}")
+  if [[ ${role} = "bp" ]]; then
+    AMARU_RUN_ARGS+=(
+      --operator-kes "${POOL_DIR}/${POOL_HOTKEY_SK_FILENAME}"
+      --operator-vrf "${POOL_DIR}/${POOL_VRF_SK_FILENAME}"
+      --operator-cert "${POOL_DIR}/${POOL_OPCERT_FILENAME}"
+    )
+  fi
+  return 0
+}
+
+# Description : Create the Amaru databases when missing: bootstrap from the published ledger snapshot,
+#             : then catch up from Mithril-certified immutable files. Existing databases are left as is.
+amaru_prepare_db() {
+  local network chain ledger
+  network=$(amaru_network)
+  chain=$(amaru_db_chain)
+  ledger=$(amaru_db_ledger)
+  [[ -d ${chain} && -d ${ledger} ]] && return 0
+  mkdir -p "${AMARU_HOME}" || return 1
+  pushd "${AMARU_HOME}" >/dev/null || return 1
+  echo "INFO: Bootstrapping Amaru ${network} databases in ${AMARU_HOME}.."
+  if ! "${CNODEBIN}" node bootstrap --network "${network}" --db-chain "${chain}" --db-ledger "${ledger}"; then
+    echo "ERROR: 'amaru node bootstrap' failed for ${network}." >&2; popd >/dev/null || return 1; return 1
+  fi
+  echo "INFO: Catching up to the latest Mithril snapshot.."
+  if ! "${CNODEBIN}" mithril sync --network "${network}" --db-chain "${chain}" --db-ledger "${ledger}" --snapshots "${AMARU_HOME}/mithril-snapshots"; then
+    echo "ERROR: 'amaru mithril sync' failed for ${network}." >&2; popd >/dev/null || return 1; return 1
+  fi
+  popd >/dev/null || return 1
+}
+
+# Description : OpenTelemetry collector config receiving Amaru's OTLP metrics on localhost and serving them in the
+#             : Prometheus format gLiveView and setup_mon.sh expect: plain metric names without job/instance/scope labels.
+#             : $1 = output file (default: ${CNODE_HOME}/files/otelcol.yaml)
+amaru_write_otelcol_config() {
+  local out="${1:-${CNODE_HOME}/files/otelcol.yaml}"
+  cat > "${out}" <<-EOT
+	receivers:
+	  otlp:
+	    protocols:
+	      grpc:
+	        endpoint: "127.0.0.1:4317"
+	processors:
+	  resource/drop_identity:
+	    attributes:
+	      - key: service.name
+	        action: delete
+	      - key: service.instance.id
+	        action: delete
+	exporters:
+	  prometheus:
+	    endpoint: "${PROM_HOST}:${PROM_PORT}"
+	    add_metric_suffixes: false
+	    without_scope_info: true
+	    metric_expiration: 60s
+	service:
+	  telemetry:
+	    metrics:
+	      level: none
+	  pipelines:
+	    metrics:
+	      receivers: [otlp]
+	      processors: [resource/drop_identity]
+	      exporters: [prometheus]
+	EOT
+}
