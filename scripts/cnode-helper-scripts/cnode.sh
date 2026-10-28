@@ -60,6 +60,14 @@ check_config_sanity() {
 }
 
 pre_startup_sanity() {
+  if [[ ${NODE_IMPL} = "amaru" ]]; then
+    if pgrep -f "${CNODE_PROC_PATTERN}" >/dev/null; then
+      echo "ERROR: An Amaru node is already running on port ${CNODE_PORT}, please terminate this node before starting a new one with this script."
+      exit 1
+    fi
+    amaru_prepare_db || exit 1
+    return 0
+  fi
   # Check if node is already running, or if stale socket file is left
   if [[ -S "${CARDANO_NODE_SOCKET_PATH}" ]]; then
     if pgrep -f "$(basename ${CNODEBIN}).*.${CARDANO_NODE_SOCKET_PATH}"; then
@@ -83,15 +91,44 @@ mithril_snapshot_download() {
 }
 
 stop_node() {
-  CNODE_PID=$(pgrep -fn "$(basename ${CNODEBIN}).*.--port ${CNODE_PORT}" 2>/dev/null) # env was only called in offline mode
+  CNODE_PID=$(pgrep -fn "${CNODE_PROC_PATTERN}" 2>/dev/null) # env was only called in offline mode
   kill -2 ${CNODE_PID} 2>/dev/null
   # touch clean "${CNODE_HOME}"/db/clean # Disabled as it's a bit hacky, but only runs when SIGINT is passed to node process. Should not be needed if node does it's job
-  printf "  Sending SIGINT to cardano-node process.."
+  printf "  Sending SIGINT to %s process.." "${NODE_IMPL}"
   sleep 5
   exit 0
 }
 
+deploy_otelcol_systemd() {
+  local otelcol
+  otelcol=$(command -v otelcol || echo "${HOME}/.local/bin/otelcol")
+  [[ -x ${otelcol} ]] || { echo "ERROR: otelcol binary not found, please run guild-deploy.sh with '-s a'."; return 1; }
+  amaru_write_otelcol_config "${CNODE_HOME}/files/otelcol.yaml"
+  "${otelcol}" validate --config "${CNODE_HOME}/files/otelcol.yaml" || return 1
+  echo "Deploying ${CNODE_VNAME}-otelcol as systemd service (serves Amaru metrics on ${PROM_HOST}:${PROM_PORT}).."
+  sudo bash -c "cat <<-'EOF' > /etc/systemd/system/${CNODE_VNAME}-otelcol.service
+	[Unit]
+	Description=Cardano Node - OpenTelemetry collector for Amaru metrics
+	PartOf=${CNODE_VNAME}.service
+	After=network-online.target
+	
+	[Service]
+	Type=simple
+	Restart=on-failure
+	RestartSec=10
+	User=${USER}
+	ExecStart=${otelcol} --config ${CNODE_HOME}/files/otelcol.yaml
+	SyslogIdentifier=${CNODE_VNAME}-otelcol
+	
+	[Install]
+	WantedBy=${CNODE_VNAME}.service
+	EOF" && echo "${CNODE_VNAME}-otelcol.service deployed successfully!!" && sudo systemctl daemon-reload && sudo systemctl enable ${CNODE_VNAME}-otelcol.service
+}
+
 deploy_systemd() {
+  if [[ ${NODE_IMPL} = "amaru" ]]; then
+    deploy_otelcol_systemd || return 1
+  fi
   echo "Deploying ${CNODE_VNAME} as systemd service.."
   sudo bash -c "cat <<-'EOF' > /etc/systemd/system/${CNODE_VNAME}.service
 	[Unit]
@@ -144,6 +181,11 @@ esac
 
 [[ "${STOP_NODE}" == "Y" ]] && stop_node
 
+if [[ ${NODE_IMPL} = "amaru" ]]; then
+  [[ ! -f "${PARENT}"/amaru.library ]] && echo -e "\namaru.library missing in \"${PARENT}\", please ensure latest guild-deploy.sh was run!\n" && exit 1
+  . "${PARENT}"/amaru.library
+fi
+
 # Set defaults and do basic sanity checks
 set_defaults
 #Deploy systemd if -d argument was specified
@@ -153,13 +195,19 @@ if [[ "${DEPLOY_SYSTEMD}" == "Y" ]]; then
 fi
 pre_startup_sanity
 
-# Download the latest mithril snapshot before starting node
-if [[ "${MITHRIL_DOWNLOAD}" == "Y" ]]; then
+# Download the latest mithril snapshot before starting node (Amaru keeps its own databases, see migrate-amaru.sh)
+if [[ "${MITHRIL_DOWNLOAD}" == "Y" && ${NODE_IMPL} != "amaru" ]]; then
   mithril_snapshot_download
 fi
 
 # Run Node
-if [[ -f "${POOL_DIR}/${POOL_OPCERT_FILENAME}" && -f "${POOL_DIR}/${POOL_VRF_SK_FILENAME}" && -f "${POOL_DIR}/${POOL_HOTKEY_SK_FILENAME}" ]]; then
+if [[ ${NODE_IMPL} = "amaru" ]]; then
+  amaru_run_args || exit 1
+  # Metrics are pushed over OTLP to the local collector, which serves them on PROM_HOST:PROM_PORT for gLiveView/Prometheus
+  [[ -z ${OTEL_SERVICE_NAME} ]] && export OTEL_SERVICE_NAME="${CNODE_VNAME}"
+  [[ -z ${OTEL_METRIC_EXPORT_INTERVAL} ]] && export OTEL_METRIC_EXPORT_INTERVAL=5000
+  exec "${CNODEBIN}" "${AMARU_RUN_ARGS[@]}"
+elif [[ -f "${POOL_DIR}/${POOL_OPCERT_FILENAME}" && -f "${POOL_DIR}/${POOL_VRF_SK_FILENAME}" && -f "${POOL_DIR}/${POOL_HOTKEY_SK_FILENAME}" ]]; then
   exec "${CNODEBIN}" "${CPU_RUNTIME[@]}" run \
     --topology "${TOPOLOGY}" \
     --config "${CONFIG}" \
