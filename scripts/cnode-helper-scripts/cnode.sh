@@ -126,9 +126,6 @@ deploy_otelcol_systemd() {
 }
 
 deploy_systemd() {
-  if [[ ${NODE_IMPL} = "amaru" ]]; then
-    deploy_otelcol_systemd || return 1
-  fi
   echo "Deploying ${CNODE_VNAME} as systemd service.."
   sudo bash -c "cat <<-'EOF' > /etc/systemd/system/${CNODE_VNAME}.service
 	[Unit]
@@ -154,7 +151,11 @@ deploy_systemd() {
 	
 	[Install]
 	WantedBy=multi-user.target
-	EOF" && echo "${CNODE_VNAME}.service deployed successfully!!" && sudo systemctl daemon-reload && sudo systemctl enable ${CNODE_VNAME}.service
+	EOF" && echo "${CNODE_VNAME}.service deployed successfully!!" && sudo systemctl daemon-reload && sudo systemctl enable ${CNODE_VNAME}.service || return 1
+  # The collector hooks into cnode.service (WantedBy/PartOf), so it is deployed once that unit exists
+  if [[ ${NODE_IMPL} = "amaru" ]]; then
+    deploy_otelcol_systemd || return 1
+  fi
 }
 
 ###################
