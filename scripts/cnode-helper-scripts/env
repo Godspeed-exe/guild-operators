@@ -118,6 +118,7 @@
 #MITHRIL_SIGNER_ENABLED="N"                             # (Y|N) Enable the gLiveView Mithril Signer Section
 
 #AMARU_HOME="${CNODE_HOME}/amaru"                       # Folder with Amaru chain/ledger databases and generated amaru.env (only used when NODE_IMPL=amaru)
+#AMARU_PEERS_MAX_DOWNSTREAM=50                          # Relay on Amaru: maximum inbound (downstream) peers; Amaru's own default of 10 refuses most of a public relay's inbound traffic
 
 #STRICT_VERSION_CHECK="Y"                               # (Y|N) Require the minimum supported node/CLI major.minor.patch versions; ignore further components. If disabled, any version will be accepted (unsupported)
 
