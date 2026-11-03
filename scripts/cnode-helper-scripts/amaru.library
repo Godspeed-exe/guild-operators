@@ -90,7 +90,7 @@ amaru_translate_topology() {
     AMARU_TOPO_MIX="static!${floor}@15m, inbound~6, shared~6, snapshot~3@1h"
     [[ ${use_ledger} -ge 0 ]] && AMARU_TOPO_MIX+=", ledger~3@24h"
     AMARU_TOPO_MAX_UPSTREAM=$(( floor + 3 ))
-    AMARU_TOPO_MAX_DOWNSTREAM=""
+    AMARU_TOPO_MAX_DOWNSTREAM=${AMARU_PEERS_MAX_DOWNSTREAM:-50}
   fi
   return 0
 }
