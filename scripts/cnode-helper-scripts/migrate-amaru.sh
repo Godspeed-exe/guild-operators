@@ -9,7 +9,7 @@
 
 #VERIFY_TIMEOUT=1800      # Seconds to wait after the switch for Amaru to follow the chain before rolling back
 #VERIFY_MAX_LAG=600       # Maximum allowed distance, in slots, between Amaru's tip and the Koios tip
-#MIN_FREE_GB_MAINNET=80   # Free disk space required in AMARU_HOME for mainnet (cardano-node db/ is kept for rollback)
+#MIN_FREE_GB_MAINNET=30   # Free disk space required in AMARU_HOME for mainnet (~15 GB used in Nov 2026; cardano-node db/ is kept for rollback)
 #MIN_FREE_GB_TESTNET=15   # Free disk space required in AMARU_HOME for preprod/preview
 
 ######################################
@@ -252,7 +252,7 @@ esac
 
 [[ -z ${VERIFY_TIMEOUT} ]] && VERIFY_TIMEOUT=1800
 [[ -z ${VERIFY_MAX_LAG} ]] && VERIFY_MAX_LAG=600
-[[ -z ${MIN_FREE_GB_MAINNET} ]] && MIN_FREE_GB_MAINNET=80
+[[ -z ${MIN_FREE_GB_MAINNET} ]] && MIN_FREE_GB_MAINNET=30
 [[ -z ${MIN_FREE_GB_TESTNET} ]] && MIN_FREE_GB_TESTNET=15
 STATE_FILE="${AMARU_HOME}/migrate-disabled-units"
 mkdir -p "${LOG_DIR}" "${PARENT}"/archive
