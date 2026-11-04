@@ -1281,6 +1281,9 @@ while true; do
 
       LC_NUMERIC=C printf -v mem_live_gb "%.1f" "$(bc -l <<<"(${mem_live}/1073741824)")"
       LC_NUMERIC=C printf -v mem_heap_gb "%.1f" "$(bc -l <<<"(${mem_heap}/1073741824)")"
+      # Live and heap memory and the GC counters come from the Haskell runtime; Amaru has none of them
+      mem_rts_unit="G"
+      [[ ${NODE_IMPL} = "amaru" ]] && mem_live_gb="-" && mem_heap_gb="-" && mem_rts_unit="" && gc_minor="-" && gc_major="-"
 
       # row 1
       printf "${VL} CPU (sys)  : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#cpu_util}))s" "${cpu_util}" "%"
@@ -1293,7 +1296,7 @@ while true; do
       # row 2
       printf "${VL} Disk util  : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#disk_usage}))s" "${disk_usage}" "%"
       mvThreeSecond
-      printf "Mem (Live) : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#mem_live_gb}))s" "${mem_live_gb}" "G"
+      printf "Mem (Live) : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#mem_live_gb}))s" "${mem_live_gb}" "${mem_rts_unit}"
       mvThreeThird
       printf "GC Major   : ${style_values_1}%s${NC}" "${gc_major}"
       closeRow
@@ -1301,7 +1304,7 @@ while true; do
       # row 3
       printf "${VL}"
       mvThreeSecond
-      printf "Mem (Heap) : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#mem_heap_gb}))s" "${mem_heap_gb}" "G"
+      printf "Mem (Heap) : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#mem_heap_gb}))s" "${mem_heap_gb}" "${mem_rts_unit}"
       closeRow
 
     else
