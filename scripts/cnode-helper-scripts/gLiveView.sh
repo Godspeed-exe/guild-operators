@@ -245,13 +245,11 @@ title="Koios gLiveView ${GLV_VERSION}"
 # Amaru logo: the mark of https://amaru.global/layout/logo-icon.svg in quadrant blocks, coloured per row along its gradient
 if [[ ${NODE_IMPL} = "amaru" && ${LEGACY_MODE} != "true" ]]; then
   amaru_logo=(
-    "    ▗█▄▖  "
-    "   ▟██▛▐▌ "
-    " ▗████▘█▘█"
-    "▗████▛▐█ █"
-    "  ▝▀█▘ ▀  "
+    "  ▗█▗ "
+    " ▟█▛▟▐"
+    "▝▀▜▘▘▝"
   )
-  amaru_logo_rgb=("48;228;161" "48;218;169" "48;209;177" "48;173;207" "49;130;243")
+  amaru_logo_rgb=("48;228;161" "48;209;177" "49;130;243")
 else
   [[ ${NODE_IMPL} = "amaru" && -z ${NODE_NAME} ]] && NODE_NAME="Amaru"
 fi
@@ -929,7 +927,7 @@ while true; do
     [[ ${header_length} -gt ${width} ]] && header_padding=0 || header_padding=$(( (width - header_length) / 2 ))
     for i in "${!amaru_logo[@]}"; do
       printf "%${header_padding}s\e[38;2;%sm%s${NC}" "" "${amaru_logo_rgb[i]}" "${amaru_logo[i]}"
-      if [[ ${i} -eq 2 ]]; then
+      if [[ ${i} -eq $(( ${#amaru_logo[@]} / 2 )) ]]; then
         [[ -n ${NODE_NAME} ]] && printf "  ${style_values_2}%s${NC} -" "${NODE_NAME}" || printf " "
         printf " ${style_info}(%s - %s)${NC} : ${style_values_1}%s${NC} [${style_values_1}%s${NC}]" "${nodemode}" "${NETWORK_NAME}" "${running_node_version}" "${running_node_rev}"
       fi
