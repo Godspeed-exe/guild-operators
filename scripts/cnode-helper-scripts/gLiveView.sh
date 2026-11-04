@@ -556,11 +556,28 @@ getOpCert () {
       opcert_file="${BASH_REMATCH[2]}"
     fi
   fi
-  # kes-period-info needs the node socket, which Amaru does not provide
+  # kes-period-info needs the node socket, which Amaru does not provide; see below for Amaru
   if [[ -f ${opcert_file} && ${NODE_IMPL} != "amaru" ]]; then
     op_cert="$(${CCLI} query kes-period-info ${NETWORK_IDENTIFIER} --op-cert-file "${opcert_file}" 2>/dev/null)"
     [[ ${op_cert} =~ qKesNodeStateOperationalCertificateNumber.:[[:space:]]([0-9]+) ]] && op_cert_chain="${BASH_REMATCH[1]}"
     [[ ${op_cert} =~ qKesOnDiskOperationalCertificateNumber.:[[:space:]]([0-9]+) ]] && op_cert_disk="${BASH_REMATCH[1]}"
+  fi
+  if [[ -f ${opcert_file} && ${NODE_IMPL} = "amaru" ]]; then
+    # The certificate's CBOR is [[KES vkey (32 bytes), counter, KES period, signature], cold vkey]: read the counter after the KES key
+    if [[ $(jq -r '.cborHex // empty' "${opcert_file}" 2>/dev/null) =~ ^82845820[0-9a-fA-F]{64}(.*)$ ]]; then
+      local rest=${BASH_REMATCH[1]} head len
+      head=$(( 16#${rest:0:2} ))
+      case ${head} in
+        2[4-7]) len=$(( 2 ** (head - 24) )); op_cert_disk=$(( 16#${rest:2:$((len * 2))} )) ;; # 0x18-0x1b: unsigned int in the next 1, 2, 4 or 8 bytes
+        *) [[ ${head} -lt 24 ]] && op_cert_disk=${head} ;;
+      esac
+    fi
+    # The counter the chain last saw for the pool, from Koios as there is no local ledger query
+    if [[ -n ${KOIOS_API} && -f ${POOL_DIR}/${POOL_ID_FILENAME}-bech32 ]]; then
+      op_cert_chain=$(curl -sSL -f -m 5 "${KOIOS_API_HEADERS[@]}" -X POST -H "Content-Type: application/json" \
+        -d "{\"_pool_bech32_ids\":[\"$(cat "${POOL_DIR}/${POOL_ID_FILENAME}-bech32")\"]}" "${KOIOS_API}/pool_info" 2>/dev/null | jq -r '.[0].op_cert_counter // empty' 2>/dev/null)
+      isNumber "${op_cert_chain}" || op_cert_chain="?"
+    fi
   fi
 }
 
