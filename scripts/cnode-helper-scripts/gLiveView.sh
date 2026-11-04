@@ -1234,11 +1234,19 @@ while true; do
     [[ ${blocks_w1s} = 1.* ]] && blocks_w1s_pct=100 || LC_NUMERIC=C printf -v blocks_w1s_pct "%.2f" "$(bc -l <<<"(${blocks_w1s}*100)")"
     [[ ${blocks_w3s} = 1.* ]] && blocks_w3s_pct=100 || LC_NUMERIC=C printf -v blocks_w3s_pct "%.2f" "$(bc -l <<<"(${blocks_w3s}*100)")"
     [[ ${blocks_w5s} = 1.* ]] && blocks_w5s_pct=100 || LC_NUMERIC=C printf -v blocks_w5s_pct "%.2f" "$(bc -l <<<"(${blocks_w5s}*100)")"
+    block_delay_label="Last Block"
+    if [[ ${NODE_IMPL} = "amaru" ]]; then
+      # Amaru reports the mean delay of the headers it received at the tip, and serves no block count
+      block_delay_label="Avg Header"
+      blocks_served="-"
+      # Amaru versions without the 1, 3 and 5 s histogram buckets: unknown, not zero
+      [[ ${node_metrics} =~ blockdelay_cdfOne ]] || { blocks_w1s_pct="-"; blocks_w3s_pct="-"; blocks_w5s_pct="-"; blocks_late="-"; }
+    fi
 
     if [[ ${VERBOSE} = "Y" ]]; then
 
       # row 1
-      printf "${VL} Last Block : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#block_delay_rounded}))s" "${block_delay_rounded}" "s"
+      printf "${VL} %-10s : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#block_delay_rounded}))s" "${block_delay_label}" "${block_delay_rounded}" "s"
       mvThreeSecond
       printf "Served     : ${style_values_1}%s${NC}" "${blocks_served}"
       mvThreeThird
@@ -1256,7 +1264,7 @@ while true; do
     else
 
       # row 1
-      printf "${VL} Last Block : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#block_delay_rounded}))s" "${block_delay_rounded}" "s"
+      printf "${VL} %-10s : ${style_values_1}%s${NC}%-$((three_col_value_width - ${#block_delay_rounded}))s" "${block_delay_label}" "${block_delay_rounded}" "s"
       mvThreeSecond
       blocks_w5s_value_width=$(( (three_col_width*2) - 23 - 6 - ${#blocks_w1s_pct} - ${#blocks_w3s_pct} ))
       printf "Less than 1|3|5s [%%] : ${style_values_1}%s${NC} | ${style_values_1}%s${NC} | ${style_values_1}%-${blocks_w5s_value_width}s${NC}" "${blocks_w1s_pct}" "${blocks_w3s_pct}" "${blocks_w5s_pct}"
