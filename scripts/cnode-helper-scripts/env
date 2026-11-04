@@ -649,6 +649,10 @@ getNodeMetrics() {
   if [[ ${NODE_IMPL} = "amaru" ]]; then
     running_node_version="Amaru ${node_version}"
     running_node_rev="${node_rev:-?}"
+    # Amaru versions that do not export the connection manager gauges yet: unknown, not zero
+    if [[ ! ${node_metrics} =~ cardano_node_metrics_connectionManager_inboundConns ]]; then
+      conn_incoming="-"; conn_outgoing="-"; conn_uni_dir="-"
+    fi
   fi
 }
 

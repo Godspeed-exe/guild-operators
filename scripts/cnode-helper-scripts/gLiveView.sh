@@ -1197,26 +1197,36 @@ while true; do
     printf "%0.s-" $(seq $((three_col_width-10)))
     closeRow
 
-    if [[ ${VERBOSE} = "Y" ]]; then
+    if [[ ${NODE_IMPL} = "amaru" ]]; then
+      # Amaru reports connections per direction only: it has no duplex reuse, inbound governor or warm/hot peer sets
       printf "${VL} Uni-Dir    : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_uni_dir}"
+      mvThreeSecond
+      printf "Peers      : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_incoming}"
       mvThreeThird
-      printf "Cold       : ${style_values_1}%-${three_col_value_width}s${NC}" "${peer_selection_cold}"
+      printf "Peers      : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_outgoing}"
+      closeRow
+    else
+      if [[ ${VERBOSE} = "Y" ]]; then
+        printf "${VL} Uni-Dir    : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_uni_dir}"
+        mvThreeThird
+        printf "Cold       : ${style_values_1}%-${three_col_value_width}s${NC}" "${peer_selection_cold}"
+        closeRow
+      fi
+
+      printf "${VL} Bi-Dir     : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_bi_dir}"
+      mvThreeSecond
+      printf "Warm       : ${style_values_1}%-${three_col_value_width}s${NC}" "${inbound_governor_warm}"
+      mvThreeThird
+      printf "Warm       : ${style_values_1}%-${three_col_value_width}s${NC}" "${peer_selection_warm}"
+      closeRow
+
+      printf "${VL} Duplex     : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_duplex}"
+      mvThreeSecond
+      printf "Hot        : ${style_values_1}%-${three_col_value_width}s${NC}" "${inbound_governor_hot}"
+      mvThreeThird
+      printf "Hot        : ${style_values_1}%-${three_col_value_width}s${NC}" "${peer_selection_hot}"
       closeRow
     fi
-
-    printf "${VL} Bi-Dir     : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_bi_dir}"
-    mvThreeSecond
-    printf "Warm       : ${style_values_1}%-${three_col_value_width}s${NC}" "${inbound_governor_warm}"
-    mvThreeThird
-    printf "Warm       : ${style_values_1}%-${three_col_value_width}s${NC}" "${peer_selection_warm}"
-    closeRow
-
-    printf "${VL} Duplex     : ${style_values_1}%-${three_col_value_width}s${NC}" "${conn_duplex}"
-    mvThreeSecond
-    printf "Hot        : ${style_values_1}%-${three_col_value_width}s${NC}" "${inbound_governor_hot}"
-    mvThreeThird
-    printf "Hot        : ${style_values_1}%-${three_col_value_width}s${NC}" "${peer_selection_hot}"
-    closeRow
 
     echo "${propdivider}" && ((line++))
 
