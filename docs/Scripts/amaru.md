@@ -27,7 +27,7 @@ Because there is no node.socket, these stop working against an Amaru node: `card
 `topology.json` stays the source of truth:
 
 - **Relay**: every `localRoots`, `publicRoots` and `bootstrapPeers` access point becomes an Amaru static peer. The sum of the `localRoots` `hotValency` values is kept connected at all times. Shared, snapshot, inbound and ledger peers (when `useLedgerAfterSlot` is not `-1`) fill the remaining slots. Up to `AMARU_PEERS_MAX_DOWNSTREAM` (default 50, set in `env`) inbound peers are accepted; Amaru's own default is 10.
-- **Block producer** (pool keys present): only the `localRoots` (your relays) are used, as static peers. There is no peer discovery, and inbound connections are limited to the same number. Keep the firewall rule that only lets your relays reach `CNODE_PORT`.
+- **Block producer** (pool keys present): only the `localRoots` (your relays) are used, as static peers. There is no peer discovery, and inbound connections are limited to the same number plus `AMARU_BP_LOCAL_CLIENTS` (default 2, set in `env`) for local clients such as `cncli sync`. Keep the firewall rule that only lets your relays reach `CNODE_PORT`.
 
 `trustable`, `advertise` and `warmValency` have no Amaru equivalent; the migration reports them.
 

@@ -82,7 +82,9 @@ amaru_translate_topology() {
     [[ ${n_local} -eq 0 ]] && { echo "ERROR: block producer topology ${topology} has no localRoots (own relays) to connect to" >&2; return 1; }
     AMARU_TOPO_MIX="static!${n_local}"
     AMARU_TOPO_MAX_UPSTREAM=${n_local}
-    AMARU_TOPO_MAX_DOWNSTREAM=${n_local}
+    # Room for local clients next to the relays, e.g. cncli sync for the blocklog and gLiveView's cncli ping;
+    # the firewall keeps strangers away from a block producer
+    AMARU_TOPO_MAX_DOWNSTREAM=$(( n_local + ${AMARU_BP_LOCAL_CLIENTS:-2} ))
     [[ -n ${public_peers}${bootstrap_peers} ]] && AMARU_TOPO_WARNINGS+=("publicRoots/bootstrapPeers are ignored on a block producer, only localRoots are used")
   else
     AMARU_TOPO_PEERS=$(sed -E 's/^,+|,+$//g; s/,+/,/g' <<< "${local_peers},${public_peers},${bootstrap_peers}")
