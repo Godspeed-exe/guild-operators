@@ -1236,9 +1236,8 @@ while true; do
     [[ ${blocks_w5s} = 1.* ]] && blocks_w5s_pct=100 || LC_NUMERIC=C printf -v blocks_w5s_pct "%.2f" "$(bc -l <<<"(${blocks_w5s}*100)")"
     block_delay_label="Last Block"
     if [[ ${NODE_IMPL} = "amaru" ]]; then
-      # Amaru reports the mean delay of the headers it received at the tip, and serves no block count
+      # Amaru reports the mean delay of the headers it received at the tip, not the delay of the last block
       block_delay_label="Avg Header"
-      blocks_served="-"
       # Amaru versions without the 1, 3 and 5 s histogram buckets: unknown, not zero
       [[ ${node_metrics} =~ blockdelay_cdfOne ]] || { blocks_w1s_pct="-"; blocks_w3s_pct="-"; blocks_w5s_pct="-"; blocks_late="-"; }
     fi
