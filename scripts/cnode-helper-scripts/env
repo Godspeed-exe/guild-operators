@@ -683,7 +683,9 @@ getNodeMetrics() {
     # count the KES periods that already passed on the wall clock as spent
     if [[ ${remaining_kes_periods} -gt 0 && ${kesperiod} -gt 0 ]]; then
       kes_periods_behind=$(( $(getCurrentKESperiod) - kesperiod ))
-      [[ ${kes_periods_behind} -gt 0 ]] && remaining_kes_periods=$(( remaining_kes_periods - kes_periods_behind ))
+      if [[ ${kes_periods_behind} -gt 0 ]]; then
+        remaining_kes_periods=$(( remaining_kes_periods - kes_periods_behind ))
+      fi
     fi
   fi
 }
