@@ -653,6 +653,12 @@ getNodeMetrics() {
     if [[ ! ${node_metrics} =~ cardano_node_metrics_connectionManager_inboundConns ]]; then
       conn_incoming="-"; conn_outgoing="-"; conn_uni_dir="-"
     fi
+    # Amaru's KES gauges follow the slot of the last validated block; while the node is behind,
+    # count the KES periods that already passed on the wall clock as spent
+    if [[ ${remaining_kes_periods} -gt 0 && ${kesperiod} -gt 0 ]]; then
+      kes_periods_behind=$(( $(getCurrentKESperiod) - kesperiod ))
+      [[ ${kes_periods_behind} -gt 0 ]] && remaining_kes_periods=$(( remaining_kes_periods - kes_periods_behind ))
+    fi
   fi
 }
 
