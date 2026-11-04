@@ -140,6 +140,30 @@ no cardano-node-compatible node-to-client socket in this profile and block
 production is unsupported. Its optional HTTP transaction submission endpoint
 is disabled because it has no built-in authentication or TLS.
 
+## Peers
+
+The supplied `amaru.env` starts from a single static upstream peer for the
+network. Amaru then discovers further peers through peer sharing, its embedded
+peer snapshot, and the ledger, and follows duplex inbound connections. The
+upstream and downstream limits are `AMARU_UPSTREAM_PEERS` and
+`AMARU_DOWNSTREAM_PEERS`.
+
+To keep your own relays or block producer connected, add them to
+`AMARU_PEER_ADDRESS` as a comma-separated `host:port` list. Amaru's default
+peer mix reserves two upstream slots for these static peers, so discovered
+peers cannot displace them. With more than two, uncomment `AMARU_PEER_MIX`,
+raise the static floor, and raise `AMARU_UPSTREAM_PEERS` by the same amount:
+
+```bash
+AMARU_PEER_ADDRESS="preview-node.play.dev.cardano.org:3001,relay2.example.com:3000,10.0.0.5:3000"
+AMARU_PEER_MIX="static!3@15m, inbound~6, shared~6, snapshot~3@1h, ledger~3@24h"
+AMARU_UPSTREAM_PEERS="4"
+```
+
+Restart the service afterwards. Existing `amaru.env` files are kept when the
+deployment is refreshed, unless `-s f` is used, which archives the old file
+under `scripts/archive/` first.
+
 ## Monitoring and helper compatibility
 
 The common `env`, libraries, Amaru adapter, and `gLiveView.sh` are deployed.
