@@ -1101,7 +1101,8 @@ if [[ ${NODE_IMPL} = "amaru" ]]; then
   # 'amaru --version' prints e.g. 'Amaru 10.11.20261022 (ddd3fdf)'
   node_version="$(${CNODEBIN} --version 2>/dev/null | head -1 | cut -d' ' -f2)"
   [[ $(${CNODEBIN} --version 2>/dev/null | head -1) =~ \(([0-9a-f]+) ]] && node_rev=${BASH_REMATCH[1]:0:8}
-  if { [[ ${STRICT_VERSION_CHECK} != N ]] && ! versionCheck "${AMARU_MIN_VERSION}" "${node_version}"; } || ! versionCheckNode "11.4.0.0" "${cli_version}"; then
+  # Nightly and source builds report a .0 patch instead of a release date, so the minimum release does not apply to them
+  if { [[ ${STRICT_VERSION_CHECK} != N && ! ${node_version} =~ ^[0-9]+\.[0-9]+\.0$ ]] && ! versionCheck "${AMARU_MIN_VERSION}" "${node_version}"; } || ! versionCheckNode "11.4.0.0" "${cli_version}"; then
     echo -e "\nGuild scripts require amaru >= ${AMARU_MIN_VERSION} ('${node_version}' found) / cardano-cli >= 11.4.0 ('${cli_version}' found).\nPlease update the binaries using guild-deploy.sh (amaru with '-s a').\n"
     return 1
   fi

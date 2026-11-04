@@ -42,6 +42,29 @@ sudo systemctl start cnode    # first start bootstraps the Amaru databases
 
 `-i amaru` sets `NODE_IMPL="amaru"` in `env` and downloads Amaru and the OpenTelemetry collector (`-s a`). Without `-i`, guild-deploy never changes `NODE_IMPL`, so refreshing scripts keeps your choice.
 
+### Choosing the Amaru version
+
+`-v` picks which Amaru to install, with `-i amaru` or `-s a`:
+
+| `-v` | Installs | Integrity |
+| --- | --- | --- |
+| *(omitted)* | the release pinned in `files/docker/node/release-versions/amaru-latest.txt` | checksum manifest |
+| `latest` | the newest release on GitHub | checksum manifest |
+| `10.11.20261029` | that release | checksum manifest |
+| `nightly` | the latest nightly build of `main` from [nightly.amaru.global](https://nightly.amaru.global) | none published; the archive hash and the commit are logged |
+| any other value | that git ref (commit, branch or tag), built from source | built locally |
+
+```bash
+./guild-deploy.sh -s a -v latest
+./guild-deploy.sh -s a -v nightly
+./guild-deploy.sh -s a -v main                                          # build the tip of main
+AMARU_SOURCE_REPO=https://github.com/<you>/amaru ./guild-deploy.sh -s a -v my-branch
+```
+
+A source build installs what it needs: the C/C++ toolchain and `libclang-dev` for RocksDB, and `rustup`, after which the repository's `rust-toolchain.toml` selects the compiler. It builds a native release binary in `~/git/amaru` with the same features as the official releases. Expect 20 to 60 minutes and several GB of disk; with less than 8 GB of memory, add swap. The build log is `~/tmp/amaru-build.log`.
+
+Nightly and source builds report a version such as `10.11.0`, with `0` where a release has its date. The scripts accept these without `STRICT_VERSION_CHECK="N"`.
+
 ## Migrating an existing node: migrate-amaru.sh
 
 ```bash

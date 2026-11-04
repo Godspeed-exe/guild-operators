@@ -159,7 +159,7 @@ err_exit() {
 usage() {
   cat <<-EOF >&2
 
-		Usage: $(basename "$0") [-n <mainnet|guild|preprod|preview>] [-p path] [-t <name>] [-b <branch>] [-i <cardano-node|amaru>] [-u] [-s [p][b][l][m][d][a][c][o][w][x][f][s]]
+		Usage: $(basename "$0") [-n <mainnet|guild|preprod|preview>] [-p path] [-t <name>] [-b <branch>] [-i <cardano-node|amaru>] [-v <amaru version>] [-u] [-s [p][b][l][m][d][a][c][o][w][x][f][s]]
 		Set up dependencies for building/using common tools across cardano ecosystem.
 		The script will always update dynamic content from existing scripts retaining existing user variables
 
@@ -169,6 +169,9 @@ usage() {
 		-b    Use alternate branch of scripts to download - only recommended for testing/development (Default: master)
 		-i    Node implementation to run as cnode: cardano-node or amaru (Default: cardano-node, or keep the current choice in env)
 		      'amaru' also downloads the Amaru binaries (-s a); see migrate-amaru.sh to move an existing cardano-node to Amaru
+		-v    Amaru version to install with -i amaru or -s a (Default: the version pinned in release-versions/amaru-latest.txt)
+		      'latest' (newest release), 'nightly' (latest nightly build, no checksum), a release such as '10.11.20261029',
+		      or any other git ref (commit, branch, tag) to build from source; AMARU_SOURCE_REPO selects the repository
 		-u    Skip update check for script itself
 		-s    Selective Install, only deploy specific components as below:
 		  p   Install common pre-requisite OS-level Dependencies for most tools on this repo (Default: skip)
@@ -217,6 +220,7 @@ set_defaults() {
   [[ -z "${CARDANO_CLI_VERSION}" ]] && CARDANO_CLI_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/cardano-cli-latest.txt" || echo "11.4.0.0")"
   [[ -z "${DBSYNC_VERSION}" ]] && DBSYNC_VERSION="13.7.2.1"
   [[ -z "${AMARU_VERSION}" ]] && AMARU_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/amaru-latest.txt" || echo "10.11.20261022")"
+  [[ -z "${AMARU_SOURCE_REPO}" ]] && AMARU_SOURCE_REPO="https://github.com/pragma-org/amaru"
   [[ -z "${OTELCOL_VERSION}" ]] && OTELCOL_VERSION="$(curl -sfk "https://raw.githubusercontent.com/${G_ACCOUNT}/guild-operators/${BRANCH}/files/docker/node/release-versions/otelcol-latest.txt" || echo "0.164.0")"
   [[ -z "${CADDR_VERSION}" ]] && CADDR_VERSION="4.0.7"
   CNODE_HOME="${CNODE_PATH}/${CNODE_NAME}"
@@ -325,6 +329,8 @@ os_dependencies() {
     if [[ "${LIBSODIUM_FORK}" == "Y" ]] || [[ "${WANT_BUILD_DEPS}" == "Y" ]]; then
       pkg_list="${pkg_list} build-essential make g++ autoconf automake"
     fi
+    # Building Amaru from source: a C/C++ toolchain for RocksDB and libclang for its Rust bindings
+    [[ "${AMARU_BUILD}" == "Y" ]] && pkg_list="${pkg_list} build-essential clang libclang-dev llvm libssl-dev zlib1g-dev protobuf-compiler"
     if [[ "${WANT_BUILD_DEPS}" == "Y" ]]; then
       libncurses_pkg="libncursesw5"
       [[ -f /etc/debian_version ]] && grep -qE '(trixie|13)' /etc/debian_version && libncurses_pkg="libncursesw6"
@@ -355,6 +361,7 @@ os_dependencies() {
     if [[ "${LIBSODIUM_FORK}" == "Y" ]] || [[ "${WANT_BUILD_DEPS}" == "Y" ]]; then
       pkg_list="${pkg_list} make gcc-c++ autoconf automake"
     fi
+    [[ "${AMARU_BUILD}" == "Y" ]] && pkg_list="${pkg_list} make gcc-c++ clang clang-devel llvm openssl-devel zlib-devel protobuf-compiler"
     if [[ "${WANT_BUILD_DEPS}" == "Y" ]]; then
       pkg_list="${pkg_list} ncurses-libs ncurses-devel openssl-devel systemd-devel llvm clang numactl-devel libffi-devel gmp-devel zlib-devel lmdb-devel lmdb liburing-devel snappy-devel protobuf-compiler"
     fi
@@ -464,6 +471,16 @@ build_dependencies() {
 }
 
 # Build fork of libsodium
+# Rust toolchain manager used to build Amaru from source; the repository's rust-toolchain.toml selects the compiler
+rust_dependencies() {
+  if ! command -v rustup &>/dev/null && [[ ! -x "${HOME}"/.cargo/bin/rustup ]]; then
+    log_progress "Installing rustup"
+    curl -sSf --proto '=https' --tlsv1.2 -m 200 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path &>/dev/null || err_exit "Could not install rustup."
+  fi
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+  log_ok "rustup ready" "$(rustup --version 2>/dev/null | head -1 | cut -d' ' -f2)"
+}
+
 build_libsodium() {
   SODIUM_REF="$(jq -r '."'${CARDANO_NODE_VERSION}'".sodium' <<< ${NODE_DEPS} 2>/dev/null)"
   if ! grep -q "/usr/local/lib:\$LD_LIBRARY_PATH" "${HOME}"/.bashrc; then
@@ -821,13 +838,9 @@ download_mithril() {
 }
 
 # Download Amaru and the OpenTelemetry collector that re-exposes its OTLP metrics on the Prometheus port used by gLiveView
-download_amaru() {
-  local amaru_arch otel_arch amaru_tgz amaru_url otel_tgz otel_url amaru_bin
-  [[ -z ${ARCH##*aarch64*} ]] && amaru_arch="aarch64" || amaru_arch="x86_64"
-  [[ -z ${ARCH##*aarch64*} ]] && otel_arch="arm64" || otel_arch="amd64"
-  pushd "${HOME}"/tmp >/dev/null || err_exit "Could not enter temporary directory: ${HOME}/tmp"
-  rm -rf amaru-dl && mkdir amaru-dl
-
+# Release from GitHub, verified against its checksum manifest
+download_amaru_release() {
+  local amaru_tgz amaru_url amaru_bin
   amaru_tgz="amaru-${AMARU_VERSION}-linux-${amaru_arch}.tar.gz"
   amaru_url="https://github.com/pragma-org/amaru/releases/download/v${AMARU_VERSION}"
   log_progress "Downloading Amaru" "${AMARU_VERSION}"
@@ -838,7 +851,70 @@ download_amaru() {
   amaru_bin=$(find amaru-dl -type f -path '*/bin/amaru' | head -1)
   [[ -n ${amaru_bin} ]] || err_exit "Amaru archive downloaded, but binary 'amaru' was not found after extraction."
   install -m 755 "${amaru_bin}" "${HOME}"/.local/bin/amaru
-  log_ok "Deployed amaru" "$("${HOME}"/.local/bin/amaru --version | head -1 | cut -d' ' -f2)"
+}
+
+# Latest nightly build of main. nightly.amaru.global publishes no checksums, so the archive hash and the commit the
+# binary reports are logged instead.
+download_amaru_nightly() {
+  local amaru_tgz="linux-${amaru_arch}.tar.gz" amaru_bin
+  log_progress "Downloading Amaru" "nightly"
+  curl -m 200 -sfL "https://nightly.amaru.global/downloads/${amaru_tgz}" -o "amaru-dl/${amaru_tgz}" || err_exit "Could not download the Amaru nightly build."
+  tar xzf "amaru-dl/${amaru_tgz}" -C amaru-dl
+  amaru_bin=$(find amaru-dl -type f -path '*/bin/amaru' | head -1)
+  [[ -n ${amaru_bin} ]] || err_exit "Amaru nightly downloaded, but binary 'amaru' was not found after extraction."
+  "${amaru_bin}" --version &>/dev/null || err_exit "The Amaru nightly build does not run on this host."
+  install -m 755 "${amaru_bin}" "${HOME}"/.local/bin/amaru
+  log_warn "Nightly builds have no checksums: archive sha256 $(sha256sum "amaru-dl/${amaru_tgz}" | cut -c1-16), $("${amaru_bin}" --version | head -1)."
+}
+
+# Native release build of a git ref (commit, branch or tag) of AMARU_SOURCE_REPO, as the release workflow builds it
+build_amaru() {
+  local ref=$1 src="${HOME}"/git/amaru commit mem_gb jobs
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+  command -v rustup &>/dev/null || err_exit "rustup not found; building Amaru installs it in the 'Rust build toolchain' step."
+  if [[ ! -d ${src}/.git ]]; then
+    log_progress "Cloning Amaru" "${AMARU_SOURCE_REPO}"
+    mkdir -p "${HOME}"/git && git clone -q "${AMARU_SOURCE_REPO}" "${src}" || err_exit "Could not clone ${AMARU_SOURCE_REPO}."
+  fi
+  git -C "${src}" remote set-url origin "${AMARU_SOURCE_REPO}"
+  git -C "${src}" fetch -q --tags --force --prune origin '+refs/heads/*:refs/remotes/origin/*' || err_exit "Could not fetch ${AMARU_SOURCE_REPO}."
+  commit=$(git -C "${src}" rev-parse -q --verify "origin/${ref}^{commit}" || git -C "${src}" rev-parse -q --verify "${ref}^{commit}") \
+    || err_exit "'${ref}' is not a branch, tag or commit of ${AMARU_SOURCE_REPO}."
+  git -C "${src}" checkout -q --detach "${commit}" || err_exit "Could not check out ${commit} in ${src}."
+  # Compiling RocksDB and linking with LTO take memory: one job per 4 GB
+  mem_gb=$(( $(awk '/^MemTotal/ {print $2}' /proc/meminfo) / 1048576 ))
+  jobs=$(( mem_gb / 4 )); [[ ${jobs} -lt 1 ]] && jobs=1; [[ ${jobs} -gt $(nproc) ]] && jobs=$(nproc)
+  [[ ${mem_gb} -lt 8 ]] && log_warn "Building Amaru with ${mem_gb} GB of memory may fail; 8 GB or more (or swap) is recommended."
+  log_progress "Building Amaru" "${ref} (${commit:0:8}) with ${jobs} job(s), this takes a while"
+  (cd "${src}" && cargo build --release --locked --jobs "${jobs}" --features amaru-uplc/malachite --bin amaru) &> "${HOME}"/tmp/amaru-build.log \
+    || err_exit "Building Amaru failed, see ${HOME}/tmp/amaru-build.log."
+  install -m 755 "${src}"/target/release/amaru "${HOME}"/.local/bin/amaru
+}
+
+download_amaru() {
+  local otel_arch otel_tgz otel_url
+  [[ -z ${ARCH##*aarch64*} ]] && amaru_arch="aarch64" || amaru_arch="x86_64"
+  [[ -z ${ARCH##*aarch64*} ]] && otel_arch="arm64" || otel_arch="amd64"
+  pushd "${HOME}"/tmp >/dev/null || err_exit "Could not enter temporary directory: ${HOME}/tmp"
+  rm -rf amaru-dl && mkdir amaru-dl
+
+  case ${AMARU_REQUEST:-pinned} in
+    pinned) download_amaru_release ;;
+    latest)
+      AMARU_VERSION=$(curl -sf -m ${CURL_TIMEOUT} https://api.github.com/repos/pragma-org/amaru/releases/latest | jq -r '.tag_name // empty')
+      AMARU_VERSION=${AMARU_VERSION#v}
+      [[ -n ${AMARU_VERSION} ]] || err_exit "Could not look up the latest Amaru release on GitHub."
+      download_amaru_release ;;
+    nightly) download_amaru_nightly ;;
+    *)
+      if [[ ${AMARU_REQUEST} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        AMARU_VERSION=${AMARU_REQUEST}
+        download_amaru_release
+      else
+        build_amaru "${AMARU_REQUEST}"
+      fi ;;
+  esac
+  log_ok "Deployed amaru" "$("${HOME}"/.local/bin/amaru --version | head -1 | cut -d' ' -f2-)"
 
   otel_tgz="otelcol_${OTELCOL_VERSION}_linux_${otel_arch}.tar.gz"
   otel_url="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}"
@@ -991,6 +1067,10 @@ parse_args() {
     NO_SELECTIVE_FLAGS="Y"
   fi
   [[ ${NODE_IMPL} = "amaru" ]] && INSTALL_AMARU="Y"
+  if [[ -n ${AMARU_REQUEST} ]]; then
+    INSTALL_AMARU="Y"
+    [[ ${AMARU_REQUEST} =~ ^(latest|nightly|[0-9]+\.[0-9]+\.[0-9]+)$ ]] || { AMARU_BUILD="Y"; INSTALL_OS_DEPS="Y"; }
+  fi
   common_init
   if [[ ! -d "${CNODE_HOME}"/files ]]; then
     # Guess this is a fresh machine and set minimal params
@@ -1007,6 +1087,7 @@ main_flow() {
   [[ "${UPDATE_CHECK}" == "Y" ]] && run_step "Deployment script update check" "default" update_check
   [[ "${INSTALL_OS_DEPS}" == "Y" ]] && run_step "OS dependencies" "auto/-s p/b/l/w" os_dependencies
   [[ "${WANT_BUILD_DEPS}" == "Y" ]] && run_step "Haskell build toolchain" "-s b" build_dependencies
+  [[ "${AMARU_BUILD}" == "Y" ]] && run_step "Rust build toolchain" "-v <git ref>" rust_dependencies
   [[ "${LIBSODIUM_FORK}" == "Y" ]] && run_step "libsodium" "-s l" build_libsodium
   [[ "${INSTALL_MITHRIL}" == "Y" ]] && run_step "Mithril binaries" "-s m" download_mithril
   [[ "${POPULATE_CNODE}" == "Y" ]] && run_step "Scripts and configuration" "default/-s f/s" populate_cnode
@@ -1019,7 +1100,7 @@ main_flow() {
   [[ "${INSTALL_BLOCKPERF}" == "Y" ]] && run_step "openBlockPerf" "-s r" download_blockperf
 }
 
-while getopts :n:p:t:s:b:i:u opt; do
+while getopts :n:p:t:s:b:i:v:u opt; do
   case ${opt} in
     n ) NETWORK=${OPTARG} ;;
     p ) CNODE_PATH=${OPTARG} ;;
@@ -1027,6 +1108,7 @@ while getopts :n:p:t:s:b:i:u opt; do
     b ) BRANCH=${OPTARG} ;;
     i ) NODE_IMPL=${OPTARG,,}
         [[ ${NODE_IMPL} = "cardano-node" || ${NODE_IMPL} = "amaru" ]] || { echo "Invalid -i '${OPTARG}', valid options are: cardano-node | amaru"; usage; } ;;
+    v ) AMARU_REQUEST=${OPTARG} ;;
     u ) UPDATE_CHECK='N' ;;
     s ) S_ARGS="${OPTARG}" ;;
     \? ) usage ;;
