@@ -1,0 +1,43 @@
+!!! warning "Experimental"
+    [Amaru](https://github.com/pragma-org/amaru) is a Rust implementation of a Cardano node, still in an exploratory phase with weekly releases. Run it on a relay next to at least one cardano-node relay, so your block producer always keeps a Haskell path to the network.
+
+The guild scripts can run Amaru instead of cardano-node under the same `cnode` systemd service. The choice is a single user variable in `env`:
+
+```bash
+NODE_IMPL="amaru"     # cardano-node (default) | amaru
+```
+
+Everything else stays where it was: `CNODE_PORT`, `topology.json`, the pool keys in `priv/pool/<POOL_NAME>`, `sudo systemctl restart cnode`, `journalctl -u cnode` and gLiveView.
+
+## What changes with Amaru
+
+| | cardano-node | Amaru |
+|---|---|---|
+| Binary | `cardano-node` | `amaru` (`guild-deploy.sh -s a`) |
+| Databases | `${CNODE_HOME}/db` | `${AMARU_HOME}` (default `${CNODE_HOME}/amaru`), created with `amaru node bootstrap` and `amaru mithril sync` |
+| Peers | `topology.json` | Translated from `topology.json` at every start (see below) |
+| Metrics | Prometheus on `PROM_PORT` | OTLP, served on the same `PROM_HOST:PROM_PORT` by `cnode-otelcol.service` |
+| node.socket | yes | **no**: local queries go through Koios (`ENABLE_KOIOS=Y` is required) |
+| Block production | mainnet and testnets | **testnets only**: Amaru refuses to forge on mainnet |
+
+Because there is no node.socket, these stop working against an Amaru node: `cardano-cli query ...`, CNTools in online mode without Koios, Ogmios, DB-Sync, the submit API (`cnode-submit-api`), the Mithril signer and Log Monitor/blockPerf. Run them against a cardano-node elsewhere if you need them.
+
+### Topology translation
+
+`topology.json` stays the source of truth:
+
+- **Relay**: every `localRoots`, `publicRoots` and `bootstrapPeers` access point becomes an Amaru static peer. The sum of the `localRoots` `hotValency` values is kept connected at all times. Shared, snapshot, inbound and ledger peers (when `useLedgerAfterSlot` is not `-1`) fill the remaining slots. Up to `AMARU_PEERS_MAX_DOWNSTREAM` (default 50, set in `env`) inbound peers are accepted; Amaru's own default is 10.
+- **Block producer** (pool keys present): only the `localRoots` (your relays) are used, as static peers. There is no peer discovery, and inbound connections are limited to the same number plus `AMARU_BP_LOCAL_CLIENTS` (default 2, set in `env`) for local clients such as `cncli sync`. Keep the firewall rule that only lets your relays reach `CNODE_PORT`.
+
+`trustable`, `advertise` and `warmValency` have no Amaru equivalent and are ignored.
+
+## Fresh install with Amaru
+
+```bash
+./guild-deploy.sh -n preview -i amaru -s pdlmf
+cd "${CNODE_HOME}"/scripts
+./cnode.sh -d                 # deploys cnode.service and cnode-otelcol.service
+sudo systemctl start cnode    # first start bootstraps the Amaru databases
+```
+
+`-i amaru` sets `NODE_IMPL="amaru"` in `env` and downloads Amaru and the OpenTelemetry collector (`-s a`). Without `-i`, guild-deploy never changes `NODE_IMPL`, so refreshing scripts keeps your choice.

@@ -19,6 +19,7 @@
       - gLiveView: Scripts/gliveview.md
       - Topology Updater: Scripts/topologyupdater.md
     - CNCLI: Scripts/cncli.md
+    - Amaru: Scripts/amaru.md
     - Mithril:
       - Overview: Mithril/mithril-overview.md
       - Client: Scripts/mithril-client.md
