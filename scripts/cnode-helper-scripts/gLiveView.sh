@@ -585,6 +585,8 @@ checkPeers() {
     peers_in=$(ss -tnp state established 2>/dev/null | grep "${CNODE_PID}," | awk -v port=":${CNODE_PORT}" '$3 ~ port {print $4}')
     peers_out=$(ss -tnp state established 2>/dev/null | grep "${CNODE_PID}," | awk -v port=":(${CNODE_PORT}|${PROM_PORT})" '$3 !~ port {print $4}')
   fi
+  # Amaru's own metrics export to cnode-otelcol (OTLP, see amaru.library) is not a peer
+  [[ ${NODE_IMPL} = "amaru" ]] && peers_out=$(grep -v '^127\.0\.0\.1:4317$' <<< "${peers_out}")
 
   [[ -z ${peers_in} && -z ${peers_out} ]] && return
 
