@@ -602,8 +602,14 @@ getNodeMetrics() {
   [[ -n ${CNODE_PID} ]] && uptimes=$(( $(date -u +%s) - $(date -d "$(ps -p ${CNODE_PID} -o lstart=)" +%s) )) || uptimes=0
   node_metrics=$(curl -s -m ${PROM_TIMEOUT} "http://${PROM_HOST}:${PROM_PORT}/metrics" | grep -v '^# ' 2>/dev/null)
   if [[ ${NODE_IMPL} = "amaru" ]]; then
+    # Amaru's own metrics carry the outcome in a label, so derive their cardano-node equivalents before the labels go:
+    #  - forks: fork switches that ended on a valid block
+    amaru_derived=$(awk '
+      /^amaru_consensus_fork_switch_total\{/ && /outcome="valid"/ { forks += $NF }
+      END { printf "cardano_node_metrics_forks_int %d\n", forks }' <<< "${node_metrics}")
     # OTLP-converted metrics: drop labels and the _total suffix, print integers in full instead of 4.80229e+06
     node_metrics=$(awk '{ name=$1; sub(/\{.*/, "", name); sub(/_total$/, "", name); v=$NF; if (v ~ /e\+/) v=sprintf("%.0f", v); print name, v }' <<< "${node_metrics}")
+    node_metrics+=$'\n'"${amaru_derived}"
   fi
   [[ ${node_metrics} =~ cardano_node_metrics_blockNum_int[[:space:]]([^[:space:]]*) ]] && blocknum=${BASH_REMATCH[1]} || blocknum=0
   [[ ${node_metrics} =~ cardano_node_metrics_epoch_int[[:space:]]([^[:space:]]*) ]] && epochnum=${BASH_REMATCH[1]} || epochnum=0
