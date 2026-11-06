@@ -82,7 +82,7 @@ preflight() {
   amaru_is_block_producer && ROLE="bp" || ROLE="relay"
   log "  Role            : ${ROLE} $([[ ${ROLE} = bp ]] && echo "(pool keys found in ${POOL_DIR})")"
   if [[ ${ROLE} = "bp" ]] && ! amaru_forging_supported; then
-    die "Amaru does not support block production on mainnet yet. Keep this block producer on cardano-node; relays can migrate."
+    die "This Amaru build does not forge on $(amaru_network): install release 10.11.20261105 or later (or set AMARU_MAINNET_FORGING=Y for a nightly build that does). Relays can migrate."
   fi
   [[ $(uname -m) = "x86_64" || $(uname -m) = "aarch64" ]] || die "Amaru releases are only published for x86_64 and aarch64, found $(uname -m)."
 

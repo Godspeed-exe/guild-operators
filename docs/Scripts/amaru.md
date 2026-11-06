@@ -18,7 +18,7 @@ Everything else stays where it was: `CNODE_PORT`, `topology.json`, the pool keys
 | Peers | `topology.json` | Translated from `topology.json` at every start (see below) |
 | Metrics | Prometheus on `PROM_PORT` | OTLP, served on the same `PROM_HOST:PROM_PORT` by `cnode-otelcol.service` |
 | node.socket | yes | **no**: local queries go through Koios (`ENABLE_KOIOS=Y` is required) |
-| Block production | mainnet and testnets | **testnets only**: Amaru refuses to forge on mainnet |
+| Block production | mainnet and testnets | mainnet from release 10.11.20261105 (earlier releases refuse it); testnets |
 
 Because there is no node.socket, these stop working against an Amaru node: `cardano-cli query ...`, CNTools in online mode without Koios, Ogmios, DB-Sync, the submit API (`cnode-submit-api`), the Mithril signer and Log Monitor/blockPerf. Run them against a cardano-node elsewhere if you need them.
 
@@ -85,7 +85,7 @@ cardano-node's db/ is kept, so a rollback is a restart, not a resync.
 
 The script:
 
-1. Checks the network, role (relay or block producer), binaries, free disk space, clock synchronisation and Koios. A mainnet block producer is refused.
+1. Checks the network, role (relay or block producer), binaries, free disk space, clock synchronisation and Koios. A mainnet block producer is refused with an Amaru release before 10.11.20261105.
 2. Shows the translated peers and lists the enabled `cnode-*` services that need cardano-node.
 3. Builds the Amaru databases while cardano-node keeps running. This takes extra RAM and disk for its duration.
 4. Disables the incompatible services, sets `NODE_IMPL="amaru"`, redeploys the systemd units and restarts `cnode`. This is the only downtime.

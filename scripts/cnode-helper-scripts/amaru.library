@@ -31,9 +31,15 @@ amaru_is_block_producer() {
   [[ -f "${POOL_DIR}/${POOL_OPCERT_FILENAME}" && -f "${POOL_DIR}/${POOL_VRF_SK_FILENAME}" && -f "${POOL_DIR}/${POOL_HOTKEY_SK_FILENAME}" ]]
 }
 
-# Description : Amaru refuses to forge on mainnet, so a mainnet block producer must stay on cardano-node
+# Description : Whether the installed Amaru forges on this network. Releases up to 10.11.20261029 refused forging
+#             : credentials on mainnet; 10.11.20261105 lifted that. Development and nightly builds report 10.11.0, so a
+#             : mainnet block producer running one needs AMARU_MAINNET_FORGING=Y in env.
 amaru_forging_supported() {
-  [[ $(amaru_network) != "mainnet" ]]
+  local version
+  [[ $(amaru_network) != "mainnet" || ${AMARU_MAINNET_FORGING} = "Y" ]] && return 0
+  version=$("${CNODEBIN}" --version 2>/dev/null | awk 'NR==1 {print $2}')
+  [[ ${version} =~ ^10\.11\.([0-9]{8})$ ]] && (( 10#${BASH_REMATCH[1]} >= 20261105 )) && return 0
+  [[ ${version} =~ ^([0-9]+)\.([0-9]+)\. ]] && (( BASH_REMATCH[1] > 10 || (BASH_REMATCH[1] == 10 && BASH_REMATCH[2] > 11) ))
 }
 
 # Description : Listen address for the node-to-node port, honouring IP_VERSION and CNODE_LISTEN_IP4/6
@@ -104,7 +110,7 @@ amaru_run_args() {
   network=$(amaru_network)
   amaru_is_block_producer && role="bp" || role="relay"
   if [[ ${role} = "bp" ]] && ! amaru_forging_supported; then
-    echo "ERROR: Amaru does not support block production on ${network} yet; keep this block producer on cardano-node (NODE_IMPL=cardano-node)." >&2
+    echo "ERROR: this Amaru build does not forge on ${network}; install release 10.11.20261105 or later (or set AMARU_MAINNET_FORGING=Y for a nightly build that does), or keep this block producer on cardano-node." >&2
     return 1
   fi
   amaru_translate_topology "${TOPOLOGY}" "${role}" || return 1
